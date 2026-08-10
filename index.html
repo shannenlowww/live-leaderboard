@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Leaderboard</title>
+<style>
+  /* ------------------------------------------------------------------
+     16:9 PRESENTATION LAYOUT
+     The board is laid out on a fixed 1600x900 stage and then scaled with a
+     single transform to fit whatever screen it lands on. That keeps the
+     proportions identical on a laptop, a 1080p projector and a 4K panel,
+     and guarantees the whole table is on screen with no scrolling.
+     ------------------------------------------------------------------ */
+  :root{
+    --pitch:#0a3d24;
+    --pitch-dk:#062616;
+    --board:#0b1712;
+    --board-2:#102019;
+    --line:rgba(255,255,255,.10);
+    --line-2:rgba(255,255,255,.16);
+    --text:#f2f7f4;
+    --muted:#8fae9e;
+    --gold:#f5c542;
+    --silver:#cdd8de;
+    --bronze:#cd8b4e;
+    --up:#4ade80;
+    --down:#f87171;
+    --fs:1;                 /* global type multiplier, set from team count */
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Helvetica Neue",Helvetica,Arial,ui-sans-serif,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden}
+  body{
+    background:var(--pitch-dk);color:var(--text);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+  }
+  /* Letterbox area — anything outside the 16:9 stage stays pitch-dark.
+     The stage is centred with absolute positioning rather than grid/flex
+     centring: its layout box stays 1600x900 even when scaled down, and an
+     item larger than its container pins to the start edge instead of
+     centring, which clips the right-hand and bottom edges. */
+  #frame{position:fixed;inset:0;overflow:hidden;background:var(--pitch-dk)}
+
+  #stage{
+    width:1600px;height:900px;
+    position:absolute;left:50%;top:50%;
+    transform-origin:center center;
+    display:flex;flex-direction:column;
+    padding:40px 64px 48px;
+    background:
+      radial-gradient(120% 70% at 50% -12%, rgba(255,255,255,.10), transparent 60%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 96px, transparent 96px 192px),
+      linear-gradient(180deg, var(--pitch) 0%, var(--pitch-dk) 100%);
+  }
+
+  /* ---- header ---- */
+  header{position:relative;text-align:center;padding-bottom:26px;margin-bottom:26px;flex:none}
+  header::before{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:var(--line-2)}
+  header::after{content:"";position:absolute;left:50%;bottom:-21px;width:42px;height:42px;margin-left:-21px;
+    border:1px solid var(--line-2);border-radius:50%;background:var(--pitch-dk)}
+  .kicker{font-size:16px;letter-spacing:.36em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+  h1{margin:0;font-size:66px;font-weight:800;letter-spacing:-.03em;
+     text-transform:uppercase;line-height:.95;text-shadow:0 3px 30px rgba(0,0,0,.55)}
+  .sub{color:var(--muted);font-size:17px;margin-top:14px;letter-spacing:.05em}
+  .live{position:absolute;right:0;top:4px;display:inline-flex;align-items:center;gap:9px;
+        padding:7px 16px;border:1px solid var(--line-2);border-radius:999px;background:rgba(0,0,0,.3);
+        font-size:14px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);
+        font-variant-numeric:tabular-nums}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--up);animation:pulse 2.2s infinite}
+  .dot.stale{background:var(--gold);animation:none}
+  .dot.err{background:var(--down);animation:none}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(74,222,128,.55)}70%{box-shadow:0 0 0 10px rgba(74,222,128,0)}100%{box-shadow:0 0 0 0 rgba(74,222,128,0)}}
+
+  /* ---- table fills the remaining stage height ---- */
+  .board{flex:1;min-height:0;display:flex;flex-direction:column;
+         background:var(--board);border:1px solid var(--line-2);border-radius:14px;
+         overflow:hidden;box-shadow:0 26px 70px rgba(0,0,0,.5)}
+  .thead{flex:none;display:grid;grid-template-columns:150px 1fr auto;gap:20px;padding:14px 34px;
+         font-size:15px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);
+         background:var(--board-2);border-bottom:1px solid var(--line-2)}
+  .thead .s{text-align:right}
+  #rows{flex:1;min-height:0;display:flex;flex-direction:column}
+
+  /* Rows flex to fill the stage, so any number of teams fits without
+     scrolling; the podium simply claims more of the height. */
+  .row{flex:1;display:grid;grid-template-columns:150px 1fr auto;gap:20px;align-items:center;
+       padding:0 34px;border-bottom:1px solid var(--line);
+       position:relative;background-color:var(--board);will-change:transform}
+  .row:last-child{border-bottom:none}
+  .row.moving{transition:transform .45s cubic-bezier(.3,.9,.35,1)}
+  .row.enter{animation:fadeIn .5s ease both}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+
+  .ranked .r1{flex:1.75}
+  .ranked .r2,.ranked .r3{flex:1.4}
+  .ranked .r1,.ranked .r2,.ranked .r3{background-image:linear-gradient(90deg,rgba(245,197,66,.10),transparent 58%)}
+  .ranked .r1::before,.ranked .r2::before,.ranked .r3::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:5px}
+  .ranked .r1::before{background:var(--gold);box-shadow:0 0 26px rgba(245,197,66,.55)}
+  .ranked .r2::before{background:var(--silver)}
+  .ranked .r3::before{background:var(--bronze)}
+
+  .pos{display:flex;align-items:center;gap:14px}
+  .posnum{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--muted);
+          font-size:calc(30px * var(--fs));min-width:34px}
+  .ball{font-size:calc(30px * var(--fs));line-height:1}
+
+  .club{font-weight:700;letter-spacing:-.01em;font-size:calc(34px * var(--fs))}
+  .val{font-family:var(--mono);font-weight:700;font-variant-numeric:tabular-nums;
+       letter-spacing:-.02em;text-align:right;font-size:calc(40px * var(--fs))}
+
+  /* --- the point of the podium: the lead is legible from the back row --- */
+  .ranked .r1 .posnum{font-size:calc(46px * var(--fs));color:var(--gold);font-weight:700}
+  .ranked .r1 .ball  {font-size:calc(46px * var(--fs))}
+  .ranked .r1 .club  {font-size:calc(60px * var(--fs))}
+  .ranked .r1 .val   {font-size:calc(70px * var(--fs));color:var(--gold);
+                      text-shadow:0 0 34px rgba(245,197,66,.35)}
+  .ranked .r2 .posnum,.ranked .r3 .posnum{font-size:calc(38px * var(--fs));color:var(--text);font-weight:700}
+  .ranked .r2 .club,.ranked .r3 .club{font-size:calc(48px * var(--fs))}
+  .ranked .r2 .val,.ranked .r3 .val{font-size:calc(56px * var(--fs))}
+
+  .val.bump{animation:bump .8s ease}
+  @keyframes bump{0%{transform:scale(1)}26%{transform:scale(1.16)}100%{transform:scale(1)}}
+  .parts{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+  .chip{font-family:var(--mono);font-size:calc(15px * var(--fs));padding:3px 9px;border-radius:5px;
+        background:var(--board-2);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .chip b{color:var(--text);font-weight:600}
+  .chip.zero{opacity:.4}
+  .score{display:flex;align-items:center;gap:16px;justify-content:flex-end}
+  .delta{font-family:var(--mono);font-size:calc(18px * var(--fs));min-width:56px;text-align:right;
+         opacity:0;transition:opacity .3s}
+  .delta.show{opacity:1}
+  .delta.up{color:var(--up)} .delta.down{color:var(--down)}
+
+  .banner{flex:none;padding:13px 34px;background:var(--board-2);border-bottom:1px solid var(--line-2);
+          text-align:center;font-size:15px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted)}
+  .msg{flex:1;display:grid;place-items:center;text-align:center;color:var(--muted);
+       font-size:20px;line-height:1.7;padding:40px}
+  .msg code{font-family:var(--mono);font-size:17px;background:var(--board-2);padding:3px 8px;
+            border-radius:5px;border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div id="frame">
+  <div id="stage">
+    <header>
+      <div class="kicker" id="kicker">Matchday</div>
+      <h1 id="title">Live Leaderboard</h1>
+      <div class="sub" id="subtitle"></div>
+      <div class="live"><span class="dot" id="dot"></span><span id="stat">connecting…</span></div>
+    </header>
+
+    <div class="board">
+      <div id="banner"></div>
+      <div class="thead"><div>Pos</div><div id="nameLabel">Team</div><div class="s" id="scoreLabel">Pts</div></div>
+      <div id="rows"><div class="msg">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   CONFIG
+   ============================================================ */
+const CONFIG = {
+  // Paste any Google Sheet URL — a normal /edit link, an /export link, or a
+  // published /pub?output=csv link. It is normalised below.
+  //
+  // Prefer the normal /edit link: it resolves to the CSV *export* endpoint,
+  // which Google serves with "no-cache, no-store" — edits appear on the next
+  // poll. The published /pub?output=csv link is cached for ~5 minutes instead.
+  // Requires sharing set to "Anyone with the link → Viewer".
+  SHEET_URL: "https://docs.google.com/spreadsheets/d/1vg0qj43D0Cr7-Evov0UTNzCWASTlrsveeIy8NCc6k6o/edit?usp=sharing",
+
+  TITLE: "Live Leaderboard",
+  KICKER: "Matchday",     // small line above the title; "" hides it
+  SUBTITLE: "",           // "" → auto ("Updates every Ns")
+
+  POLL_SECONDS: 8,        // Google's export endpoint is uncached, so this is real
+  TOP_N: 0,               // 0 = show every team
+  SORT: "desc",           // "desc" = highest total wins
+
+  // The board deliberately shows only position, team name and total score.
+  // Each of these adds something back if you ever want it.
+  SHOW_BREAKDOWN: false,  // per-station chips under each team
+  SHOW_DELTA: false,      // ▲/▼ change since the previous refresh
+  HIDE_UNSCORED: false,   // hide teams with no scores yet
+  SHOW_BALL: true,        // ⚽ beside the team in first place
+
+  NAME_LABEL: "Team",
+  SCORE_LABEL: "Pts",
+  DECIMALS: null          // null = keep sheet precision
+};
+/* ========================= end config ======================== */
+
+const $ = id => document.getElementById(id);
+const state = { prev: new Map(), first: true, lastOk: null, fails: 0 };
+
+/* ---------- fit the 1600x900 stage to the screen ---------- */
+const STAGE_W = 1600, STAGE_H = 900;
+function fit(){
+  const s = Math.min(innerWidth / STAGE_W, innerHeight / STAGE_H);
+  $("stage").style.transform = `translate(-50%,-50%) scale(${s})`;
+}
+addEventListener("resize", fit);
+fit();
+
+/* ---------- resolve any Sheets URL to a raw-CSV endpoint ----------
+   The /export endpoint is preferred: it returns the sheet verbatim and is
+   sent uncached. The gviz endpoint is deliberately NOT used — it applies its
+   own header detection and silently swallows the first label row, which for
+   a grid layout like this one loses the team names.
+------------------------------------------------------------------- */
+function resolveUrl(raw){
+  const u = (raw || "").trim();
+  if (!u) return null;
+  if (/\/export\?|output=csv|tqx=out:csv/.test(u)) return u;   // already CSV
+  const id = u.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (!id) return u;
+  const gid = (u.match(/[#&?]gid=([0-9]+)/) || [])[1] || "0";
+  return `https://docs.google.com/spreadsheets/d/${id[1]}/export?format=csv&gid=${gid}`;
+}
+
+/* ---------- transport B: JSONP, for pages opened straight off disk ----------
+   Opened as file://, the CSV export is unreachable: Google answers it with a
+   307 redirect, and on that redirect it omits Access-Control-Allow-Origin for
+   a null origin, so the browser kills the request ("Failed to fetch") before
+   reaching the final response that would have allowed it.
+
+   A <script> tag isn't subject to CORS at all, so the gviz JSONP endpoint
+   works from disk. It is used only as a fallback: gviz applies its own header
+   detection, whereas the CSV export returns the sheet verbatim.
+--------------------------------------------------------------------------- */
+function sheetParts(raw){
+  const u = (raw || "").trim();
+  // Exclude the published /d/e/2PACX… form — gviz needs the real sheet id.
+  const id = u.match(/\/spreadsheets\/d\/(?!e\/)([a-zA-Z0-9-_]+)/);
+  if (!id) return null;
+  return { id: id[1], gid: (u.match(/[#&?]gid=([0-9]+)/) || [])[1] || "0" };
+}
+
+function jsonp(parts, timeoutMs = 12000){
+  return new Promise((resolve, reject) => {
+    const cb = "__gviz_" + Math.random().toString(36).slice(2, 10);
+    const tqx = encodeURIComponent(`out:json;responseHandler:${cb}`);
+    const src = `https://docs.google.com/spreadsheets/d/${parts.id}/gviz/tq`
+              + `?gid=${parts.gid}&tqx=${tqx}&_=${Date.now()}`;
+    const s = document.createElement("script");
+    const finish = fn => { clearTimeout(timer); delete window[cb]; s.remove(); fn(); };
+    const timer = setTimeout(() => finish(() => reject(new Error("timed out"))), timeoutMs);
+    window[cb] = res => finish(() => {
+      if (!res || res.status !== "ok" || !res.table) reject(new Error("sheet not readable"));
+      else resolve(res.table);
+    });
+    s.onerror = () => finish(() => reject(new Error("blocked or offline")));
+    s.src = src;
+    document.head.appendChild(s);
+  });
+}
+
+/* Reshape a gviz table into the same grid parseCsv produces, so both
+   transports feed shape() identically. Column labels become the header row. */
+function gvizToRows(table){
+  const header = table.cols.map(c => (c.label || "").trim());
+  const cell = c => (c == null || c.v == null) ? "" : String(c.f != null ? c.f : c.v);
+  const rows = table.rows.map(r => {
+    const out = (r.c || []).map(cell);
+    while (out.length < header.length) out.push("");
+    return out;
+  });
+  return [header, ...rows];
+}
+
+/* Pick a transport: CSV export when served over http(s), JSONP off disk,
+   and JSONP as a last resort if the fetch fails for any other reason. */
+async function loadRows(){
+  const parts = sheetParts(CONFIG.SHEET_URL);
+  const viaJsonp = async () => {
+    if (!parts) throw new Error("this mode needs a standard /spreadsheets/d/<id>/ link");
+    return gvizToRows(await jsonp(parts));
+  };
+  if (location.protocol === "file:") return viaJsonp();
+
+  const url = resolveUrl(CONFIG.SHEET_URL);
+  try{
+    const res = await fetch(url + (url.includes("?") ? "&" : "?") + "_=" + Date.now(), { cache:"no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return parseCsv(await res.text());
+  } catch (e){
+    if (parts) return viaJsonp();
+    throw e;
+  }
+}
+
+/* ---------- CSV parsing (quotes, embedded commas, CRLF) ---------- */
+function parseCsv(text){
+  const rows=[]; let row=[], f="", q=false;
+  for (let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){f+='"';i++;} else q=false; } else f+=c; }
+    else if(c==='"') q=true;
+    else if(c===','){ row.push(f); f=""; }
+    else if(c==='\n'){ row.push(f); rows.push(row); row=[]; f=""; }
+    else if(c!=='\r') f+=c;
+  }
+  if(f.length||row.length){ row.push(f); rows.push(row); }
+  return rows;
+}
+
+const num = v => { const n=parseFloat(String(v).replace(/[^0-9.\-]/g,"")); return Number.isFinite(n)?n:null; };
+const filled = r => r.filter(c => c && c.trim() !== "").length;
+const isDerived = s => /^(total|totals|sum|overall|grand total|score)$/i.test(s.trim());
+
+/* ---------- shape the sheet into ranked entries ----------
+   A) matrix — entities across the header row, categories down column 0
+      (this sheet: Team 1..8 across, Station 1..4 down)
+   B) flat   — one entity per row, with a score column
+------------------------------------------------------------ */
+function shape(rows){
+  const hIdx = rows.findIndex(r => filled(r) >= 2);
+  if (hIdx < 0) return null;
+  const header = rows[hIdx].map(c => (c||"").trim());
+  const body = rows.slice(hIdx + 1);
+
+  const matrix = header[0] === "" && header.slice(1).filter(Boolean).length >= 2;
+
+  if (matrix){
+    const cols = header.map((h,i) => ({h,i})).slice(1).filter(c => c.h !== "");
+    const cats = body.filter(r => (r[0]||"").trim() !== "" && !isDerived(r[0]));
+    const entries = cols.map(c => {
+      const parts = cats.map(r => ({ label:(r[0]||"").trim(), value:num(r[c.i]) }));
+      const scored = parts.filter(p => p.value !== null);
+      return {
+        key: c.h.toLowerCase(), name: c.h,
+        score: scored.reduce((s,p) => s + p.value, 0),
+        parts, anyScore: scored.length > 0
+      };
+    });
+    return { entries, catCount: cats.length, layout: "matrix" };
+  }
+
+  const data = body.filter(r => filled(r) > 0);
+  const numeric = header.map((_,i) => data.length && data.every(r => !r[i] || !r[i].trim() || num(r[i]) !== null));
+  let nameC = header.findIndex((_,i) => !numeric[i]); if (nameC < 0) nameC = 0;
+  let scoreC = header.findIndex(h => /score|points|pts|total|value|amount/i.test(h));
+  if (scoreC < 0 || !numeric[scoreC]) scoreC = numeric.lastIndexOf(true);
+  if (scoreC < 0) scoreC = header.length - 1;
+  const entries = data.map(r => {
+    const name=(r[nameC]||"").trim(), s=num(r[scoreC]);
+    return name ? { key:name.toLowerCase(), name, score:s ?? 0, parts:[], anyScore:s !== null } : null;
+  }).filter(Boolean);
+  return { entries, catCount:0, layout:"flat" };
+}
+
+const fmt = n => CONFIG.DECIMALS == null
+  ? n.toLocaleString(undefined,{maximumFractionDigits:20})
+  : n.toLocaleString(undefined,{minimumFractionDigits:CONFIG.DECIMALS,maximumFractionDigits:CONFIG.DECIMALS});
+
+/* ---------- render with FLIP reordering ---------- */
+function render(entries, ranked){
+  const host = $("rows");
+
+  // Rows share a fixed-height stage, so type has to come down as the field
+  // grows. Tuned so 8 teams sit at full size and ~16 still stay readable.
+  document.documentElement.style.setProperty("--fs",
+    String(Math.min(1, Math.max(0.5, 9 / Math.max(1, entries.length)))));
+
+  const before = new Map();
+  host.querySelectorAll(".row").forEach(el => before.set(el.dataset.key, el.getBoundingClientRect().top));
+
+  host.className = ranked ? "ranked" : "";
+  host.innerHTML = "";
+
+  entries.forEach((e, i) => {
+    const div = document.createElement("div");
+    div.className = "row" + (ranked && e.rank <= 3 ? ` r${e.rank}` : "");
+    div.dataset.key = e.key;
+    // Higher-placed rows stack above lower ones, so a row climbing the table
+    // slides over the rows it is overtaking rather than under them.
+    div.style.zIndex = entries.length - i;
+
+    const ball = (CONFIG.SHOW_BALL && ranked && e.rank === 1) ? `<span class="ball">⚽</span>` : "";
+
+    const chips = (CONFIG.SHOW_BREAKDOWN && e.parts.length)
+      ? `<div class="parts">${e.parts.map(p =>
+          `<span class="chip${p.value ? "" : " zero"}">${p.label} <b>${p.value === null ? "–" : fmt(p.value)}</b></span>`
+        ).join("")}</div>` : "";
+
+    const prev = state.prev.get(e.key);
+    const diff = prev === undefined ? 0 : e.score - prev;
+    const dTxt = diff === 0 ? "" : (diff > 0 ? "▲" : "▼") + fmt(Math.abs(diff));
+    const delta = CONFIG.SHOW_DELTA
+      ? `<span class="delta ${diff>0?"up":diff<0?"down":""} ${dTxt?"show":""}">${dTxt}</span>` : "";
+
+    div.innerHTML = `
+      <div class="pos"><span class="posnum">${ranked ? e.rank : "–"}</span>${ball}</div>
+      <div><div class="club">${e.name}</div>${chips}</div>
+      <div class="score">
+        ${delta}
+        <span class="val${diff && !state.first ? " bump" : ""}">${fmt(e.score)}</span>
+      </div>`;
+    host.appendChild(div);
+    if (!before.has(e.key) && !state.first) div.classList.add("enter");
+  });
+
+  host.querySelectorAll(".row").forEach(el => {
+    const from = before.get(el.dataset.key);
+    if (from === undefined) return;
+    const dy = from - el.getBoundingClientRect().top;
+    if (!dy) return;
+    el.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() => { el.classList.add("moving"); el.style.transform = ""; });
+  });
+
+  state.prev = new Map(entries.map(e => [e.key, e.score]));
+  state.first = false;
+}
+
+const setStatus = (kind, text) => {
+  $("dot").className = "dot" + (kind === "ok" ? "" : " " + kind);
+  $("stat").textContent = text;
+};
+
+/* ---------- poll ---------- */
+async function tick(){
+  const url = resolveUrl(CONFIG.SHEET_URL);
+  if (!url){
+    setStatus("err", "not configured");
+    $("rows").innerHTML = `<div class="msg">No sheet connected — set <code>SHEET_URL</code> at the top of this file.</div>`;
+    return;
+  }
+  try{
+    const shaped = shape(await loadRows());
+    if (!shaped || !shaped.entries.length) throw new Error("no readable rows");
+
+    let entries = shaped.entries;
+    if (CONFIG.HIDE_UNSCORED) entries = entries.filter(e => e.anyScore);
+
+    // Before any scores land, keep sheet order and don't hand out places.
+    const ranked = entries.some(e => e.anyScore) && new Set(entries.map(e => e.score)).size > 1;
+
+    if (ranked){
+      entries = [...entries].sort((a,b) => CONFIG.SORT === "asc" ? a.score-b.score : b.score-a.score);
+      let ls = null, lr = 0;
+      entries.forEach((e,i) => { if (e.score === ls) e.rank = lr; else { e.rank = i+1; lr = e.rank; ls = e.score; } });
+      if (CONFIG.TOP_N > 0) entries = entries.filter(e => e.rank <= CONFIG.TOP_N);
+    }
+
+    $("banner").innerHTML = ranked ? "" :
+      `<div class="banner">Kick-off pending · all ${entries.length} teams in sheet order</div>`;
+
+    render(entries, ranked);
+    state.lastOk = new Date();
+    state.fails = 0;
+    setStatus("ok", "Live · " + state.lastOk.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}));
+  } catch (err){
+    state.fails++;
+    const age = state.lastOk ? Math.round((Date.now() - state.lastOk)/1000) : null;
+    setStatus(state.lastOk ? "stale" : "err",
+      state.lastOk ? `Stale · ${age}s since update` : "Can’t reach sheet");
+    if (!state.lastOk){
+      $("rows").innerHTML = `<div class="msg">Couldn’t read the sheet — <code>${String(err.message)}</code><br>
+        Check that sharing is still “Anyone with the link → Viewer”.</div>`;
+    }
+  }
+}
+
+/* Self-scheduling loop rather than setInterval. At a 4s cadence a stalled
+   request would otherwise pile up behind the next one; this waits for each
+   poll to finish, then backs off on consecutive failures (8s → 16 → 30s
+   cap) so a rate-limit or a dropped network doesn't turn into a hammer.
+   One success resets it to the configured cadence. */
+function loop(){
+  const started = Date.now();
+  tick().finally(() => {
+    const base = Math.max(2, CONFIG.POLL_SECONDS) * 1000;
+    // Measure the gap from request *start*, so the round trip (~1s to Google)
+    // isn't added on top of the interval and stretch the real cadence.
+    const wait = state.fails
+      ? Math.min(base * 2 ** state.fails, 30000)
+      : Math.max(500, base - (Date.now() - started));
+    setTimeout(loop, wait);
+  });
+}
+
+$("title").textContent = document.title = CONFIG.TITLE;
+$("kicker").textContent = CONFIG.KICKER;
+$("kicker").style.display = CONFIG.KICKER ? "" : "none";
+$("subtitle").textContent = CONFIG.SUBTITLE || `Updates every ${CONFIG.POLL_SECONDS} seconds`;
+$("nameLabel").textContent = CONFIG.NAME_LABEL;
+$("scoreLabel").textContent = CONFIG.SCORE_LABEL;
+loop();
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+</script>
+</body>
+</html>
